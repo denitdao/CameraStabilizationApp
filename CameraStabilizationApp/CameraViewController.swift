@@ -211,13 +211,23 @@ class CameraViewController: UIViewController {
         let y = gravity.y
 
         // Calculate the tilt angle around the Z-axis relative to gravity
-        let tiltAngle = atan2(y, x) - .pi / 2
+        var tiltAngle = atan2(y, x) - .pi / 2
 
-        // If there's minimal movement, don't update rotation to avoid drift
-        if abs(tiltAngle - currentRotationAngle) > 0.02 { // Update threshold
-            currentRotationAngle = tiltAngle
-            applyRotation(currentRotationAngle)
+        // Apply a 180-degree correction
+        tiltAngle += .pi  // Add π to rotate everything by 180 degrees
+
+        tiltAngle = -tiltAngle
+
+        // Normalize angle to range [-π, π] to prevent unexpected flips
+        if tiltAngle > .pi {
+            tiltAngle -= 2 * .pi
+        } else if tiltAngle < -.pi {
+            tiltAngle += 2 * .pi
         }
+
+        // Update the current rotation angle immediately
+        currentRotationAngle = tiltAngle
+        applyRotation(currentRotationAngle)
     }
 
 
@@ -270,6 +280,9 @@ class CameraViewController: UIViewController {
             ]
             assetWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: outputSettings)
             assetWriterInput.expectsMediaDataInRealTime = true
+
+            // Apply a clockwise 90-degree rotation
+            assetWriterInput.transform = CGAffineTransform(rotationAngle: .pi / 2)
 
             pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
                 assetWriterInput: assetWriterInput,
@@ -387,12 +400,10 @@ extension CameraViewController: AVCaptureVideoDataOutputSampleBufferDelegate {
             guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
             let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
 
-            // Apply rotation using currentRotationAngle directly
+            // Apply rotation using currentRotationAngle with initial offset corrected
             let rotatedImage = ciImage.transformed(by: CGAffineTransform(rotationAngle: CGFloat(currentRotationAngle)))
 
-            // Rest of your code for creating a new pixel buffer and appending to asset writer
-            // [Existing code here for creating new pixel buffer and rendering rotated image]
-
+            // Your existing code for creating a new pixel buffer and appending to asset writer
             var newPixelBuffer: CVPixelBuffer?
             let pixelBufferAttributes = [
                 kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
