@@ -210,22 +210,16 @@ class CameraViewController: UIViewController {
         let x = gravity.x
         let y = gravity.y
 
-        // Compute the tilt angle around the Z-axis
-        var tiltAngle = atan2(y, x) - .pi / 2
+        // Calculate the tilt angle around the Z-axis relative to gravity
+        let tiltAngle = atan2(y, x) - .pi / 2
 
-        // Normalize angle to range [-π, π]
-        if tiltAngle > .pi {
-            tiltAngle -= 2 * .pi
-        } else if tiltAngle < -.pi {
-            tiltAngle += 2 * .pi
+        // If there's minimal movement, don't update rotation to avoid drift
+        if abs(tiltAngle - currentRotationAngle) > 0.02 { // Update threshold
+            currentRotationAngle = tiltAngle
+            applyRotation(currentRotationAngle)
         }
-
-        // Apply low-pass filter
-        currentRotationAngle = (filterFactor * previousRotationAngle) + ((1 - filterFactor) * tiltAngle)
-        previousRotationAngle = currentRotationAngle
-
-        applyRotation(currentRotationAngle)
     }
+
 
     func applyRotation(_ angle: Double) {
         guard let previewLayer = self.videoPreviewLayer else {
@@ -393,16 +387,15 @@ extension CameraViewController: AVCaptureVideoDataOutputSampleBufferDelegate {
             guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
             let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
 
-            // Apply rotation to ciImage using currentRotationAngle
+            // Apply rotation using currentRotationAngle directly
             let rotatedImage = ciImage.transformed(by: CGAffineTransform(rotationAngle: CGFloat(currentRotationAngle)))
 
-            // Rest of your code for creating new pixel buffer and appending to asset writer...
-            // [Your existing code to create a new pixel buffer and render the rotated image]
+            // Rest of your code for creating a new pixel buffer and appending to asset writer
+            // [Existing code here for creating new pixel buffer and rendering rotated image]
 
-            // Create a new pixel buffer
             var newPixelBuffer: CVPixelBuffer?
             let pixelBufferAttributes = [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
                 kCVPixelBufferWidthKey as String: self.videoWidth,
                 kCVPixelBufferHeightKey as String: self.videoHeight,
                 kCVPixelBufferIOSurfacePropertiesKey as String: [:]
