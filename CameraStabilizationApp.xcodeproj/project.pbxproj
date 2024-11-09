@@ -145,8 +145,12 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = G99ZK33457;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = CameraStabilizationApp/Info.plist;
+				INFOPLIST_KEY_NSCameraUsageDescription = "This app requirec access to the camera to record videos.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "This app requires access to the microphone to record audio with your videos.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "This app uses motion data to stabilize your videos.";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIMainStoryboardFile = Main;
@@ -172,8 +176,12 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = G99ZK33457;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = CameraStabilizationApp/Info.plist;
+				INFOPLIST_KEY_NSCameraUsageDescription = "This app requirec access to the camera to record videos.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "This app requires access to the microphone to record audio with your videos.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "This app uses motion data to stabilize your videos.";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIMainStoryboardFile = Main;
