@@ -8,6 +8,7 @@
 import UIKit
 import AVFoundation
 import CoreMotion
+import Photos
 
 class CameraViewController: UIViewController {
     @IBOutlet weak var recordButton: UIButton!
@@ -70,13 +71,16 @@ class CameraViewController: UIViewController {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
             // Microphone access is already authorized.
-            self.checkMotionAuthorization()
+            // Remove or comment out the following line:
+            // self.checkMotionAuthorization()
+            break
         case .notDetermined:
             // Microphone access has not been requested yet.
             AVCaptureDevice.requestAccess(for: .audio) { granted in
                 DispatchQueue.main.async {
                     if granted {
-                        self.checkMotionAuthorization()
+                        // Remove or comment out the following line:
+                        // self.checkMotionAuthorization()
                     } else {
                         print("Microphone access denied.")
                         // Handle denial
@@ -88,6 +92,7 @@ class CameraViewController: UIViewController {
             // Handle denial
         }
     }
+
 
     func checkMotionAuthorization() {
         if #available(iOS 11.0, *) {
@@ -109,58 +114,76 @@ class CameraViewController: UIViewController {
 
     // MARK: - Camera Setup
     func setupCameraSession() {
-        captureSession = AVCaptureSession()
-        captureSession.sessionPreset = .high
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.captureSession = AVCaptureSession()
+            self.captureSession.sessionPreset = .high
 
-        // Set up video input
-        guard let videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) ??
-              AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) else {
-            print("Error: No camera devices are available.")
-            return
-        }
+            // Set up video input
+            let discoverySession = AVCaptureDevice.DiscoverySession(
+                deviceTypes: [.builtInWideAngleCamera, .builtInDualCamera, .builtInTripleCamera, .builtInTrueDepthCamera],
+                mediaType: .video,
+                position: .unspecified
+            )
 
-        do {
-            let videoInput = try AVCaptureDeviceInput(device: videoDevice)
-            if captureSession.canAddInput(videoInput) {
-                captureSession.addInput(videoInput)
-            } else {
-                print("Error: Cannot add video input to the session.")
+            guard let videoDevice = discoverySession.devices.first else {
+                print("Error: No camera devices are available.")
                 return
             }
-        } catch {
-            print("Error creating video input: \(error.localizedDescription)")
-            return
+
+            do {
+                let videoInput = try AVCaptureDeviceInput(device: videoDevice)
+                if self.captureSession.canAddInput(videoInput) {
+                    self.captureSession.addInput(videoInput)
+
+                    // Get video dimensions
+                    let dimensions = CMVideoFormatDescriptionGetDimensions(videoDevice.activeFormat.formatDescription)
+                    self.videoWidth = Int(dimensions.width)
+                    self.videoHeight = Int(dimensions.height)
+                } else {
+                    print("Error: Cannot add video input to the session.")
+                    return
+                }
+            } catch {
+                print("Error creating video input: \(error.localizedDescription)")
+                return
+            }
+
+            // Set up audio input (optional)
+            guard let audioDevice = AVCaptureDevice.default(for: .audio),
+                  let audioInput = try? AVCaptureDeviceInput(device: audioDevice),
+                  self.captureSession.canAddInput(audioInput) else {
+                print("Error setting up audio input.")
+                return
+            }
+            self.captureSession.addInput(audioInput)
+
+            // Set up video output
+            self.videoOutput = AVCaptureVideoDataOutput()
+            self.videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+            self.videoOutput.setSampleBufferDelegate(self, queue: DispatchQueue(label: "videoQueue"))
+            if self.captureSession.canAddOutput(self.videoOutput) {
+                self.captureSession.addOutput(self.videoOutput)
+            } else {
+                print("Error: Cannot add video output to the session.")
+                return
+            }
+
+            // Start the session
+            self.captureSession.startRunning()
+            
+            // Configure the preview layer
+            DispatchQueue.main.async {
+                self.videoPreviewLayer = AVCaptureVideoPreviewLayer(session: self.captureSession)
+                self.videoPreviewLayer.videoGravity = .resizeAspectFill
+                self.videoPreviewLayer.frame = self.view.bounds
+                self.view.layer.insertSublayer(self.videoPreviewLayer, at: 0)
+
+                // Start device motion updates after the videoPreviewLayer is set up
+                self.checkMotionAuthorization()
+            }
         }
-
-        // Set up audio input (optional)
-        guard let audioDevice = AVCaptureDevice.default(for: .audio),
-              let audioInput = try? AVCaptureDeviceInput(device: audioDevice),
-              captureSession.canAddInput(audioInput) else {
-            print("Error setting up audio input.")
-            return
-        }
-        captureSession.addInput(audioInput)
-
-        // Set up video output
-        videoOutput = AVCaptureVideoDataOutput()
-        videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
-        videoOutput.setSampleBufferDelegate(self, queue: DispatchQueue(label: "videoQueue"))
-        captureSession.addOutput(videoOutput)
-
-        // Configure the preview layer
-        videoPreviewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
-        videoPreviewLayer.videoGravity = .resizeAspectFill
-
-        // Add the preview layer to the view hierarchy
-        DispatchQueue.main.async {
-            // Assuming you have a UIView named previewView
-            self.videoPreviewLayer.frame = self.view.bounds
-            self.view.layer.insertSublayer(self.videoPreviewLayer, at: 0)
-        }
-
-        // Start the session
-        captureSession.startRunning()
     }
+
 
     // MARK: - Motion Handling
     func startDeviceMotionUpdates() {
@@ -190,8 +213,14 @@ class CameraViewController: UIViewController {
     }
 
     func applyRotation(_ angle: Double) {
+        guard let previewLayer = self.videoPreviewLayer else {
+            // Optionally log a message or handle the nil case
+            print("Warning: videoPreviewLayer is nil in applyRotation")
+            return
+        }
+
         UIView.animate(withDuration: 0.1) {
-            self.videoPreviewLayer.setAffineTransform(CGAffineTransform(rotationAngle: CGFloat(-angle)))
+            previewLayer.setAffineTransform(CGAffineTransform(rotationAngle: CGFloat(-angle)))
         }
     }
 
@@ -201,30 +230,46 @@ class CameraViewController: UIViewController {
     var assetWriterInput: AVAssetWriterInput!
     var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor!
     var isRecording = false
+    var videoWidth: Int = 0
+    var videoHeight: Int = 0
 
     func startRecording() {
         let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("output.mov")
         do {
             assetWriter = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
+
+            let videoWidth = self.videoWidth
+            let videoHeight = self.videoHeight
+
             let outputSettings: [String: Any] = [
                 AVVideoCodecKey: AVVideoCodecType.h264,
-                AVVideoWidthKey: NSNumber(value: Float(view.frame.width)),
-                AVVideoHeightKey: NSNumber(value: Float(view.frame.height))
+                AVVideoWidthKey: videoWidth,
+                AVVideoHeightKey: videoHeight,
+                AVVideoCompressionPropertiesKey: [
+                    AVVideoAverageBitRateKey: NSNumber(value: 6000000),
+                    AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
+                ]
             ]
             assetWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: outputSettings)
             assetWriterInput.expectsMediaDataInRealTime = true
 
             pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
                 assetWriterInput: assetWriterInput,
-                sourcePixelBufferAttributes: nil
+                sourcePixelBufferAttributes: [
+                    kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
+                    kCVPixelBufferWidthKey as String: videoWidth,
+                    kCVPixelBufferHeightKey as String: videoHeight
+                ]
             )
 
             if assetWriter.canAdd(assetWriterInput) {
                 assetWriter.add(assetWriterInput)
+            } else {
+                print("Cannot add asset writer input.")
+                return
             }
 
-            assetWriter.startWriting()
-            assetWriter.startSession(atSourceTime: .zero)
+            // Do not start writing yet; start when the first sample buffer is received
             isRecording = true
         } catch {
             print("Error setting up asset writer: \(error)")
@@ -236,8 +281,51 @@ class CameraViewController: UIViewController {
         assetWriterInput.markAsFinished()
         assetWriter.finishWriting {
             print("Recording finished.")
-            // Optionally, save video to photo library
-            UISaveVideoAtPathToSavedPhotosAlbum(self.assetWriter.outputURL.path, self, #selector(self.video(_:didFinishSavingWithError:contextInfo:)), nil)
+            if self.assetWriter.status == .completed {
+                self.saveVideoToPhotoLibrary(url: self.assetWriter.outputURL)
+            } else {
+                if let error = self.assetWriter.error {
+                    print("Asset Writer Error: \(error.localizedDescription)")
+                } else {
+                    print("Asset Writer Error: Unknown error")
+                }
+            }
+        }
+    }
+    
+    func saveVideoToPhotoLibrary(url: URL) {
+        PHPhotoLibrary.requestAuthorization { status in
+            switch status {
+            case .authorized:
+                PHPhotoLibrary.shared().performChanges({
+                    PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
+                }) { saved, error in
+                    if let error = error {
+                        print("Error saving video: \(error.localizedDescription)")
+                    } else {
+                        print("Video saved successfully.")
+                    }
+                }
+            case .denied, .restricted:
+                print("Photo Library access denied.")
+                // Handle denial
+            case .notDetermined:
+                // Should not reach here
+                break
+            case .limited:
+                // Handle limited access if needed
+                PHPhotoLibrary.shared().performChanges({
+                    PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
+                }) { saved, error in
+                    if let error = error {
+                        print("Error saving video: \(error.localizedDescription)")
+                    } else {
+                        print("Video saved successfully.")
+                    }
+                }
+            @unknown default:
+                break
+            }
         }
     }
 
@@ -254,37 +342,64 @@ class CameraViewController: UIViewController {
 extension CameraViewController: AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard isRecording else { return }
-        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
 
-        // Apply rotation to ciImage
-        let rotatedImage = ciImage.transformed(by: CGAffineTransform(rotationAngle: CGFloat(-currentRotationAngle)))
+        let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
-        // Create a pixel buffer from the rotated image
-        var newPixelBuffer: CVPixelBuffer?
-        let attributes = [
-            kCVPixelBufferCGImageCompatibilityKey: kCFBooleanTrue!,
-            kCVPixelBufferCGBitmapContextCompatibilityKey: kCFBooleanTrue!
-        ] as CFDictionary
+        // Start asset writer when first sample buffer is received
+        if assetWriter.status == .unknown {
+            assetWriter.startWriting()
+            assetWriter.startSession(atSourceTime: presentationTime)
+        }
 
-        let status = CVPixelBufferCreate(kCFAllocatorDefault,
-                                         Int(rotatedImage.extent.width),
-                                         Int(rotatedImage.extent.height),
-                                         kCVPixelFormatType_32BGRA,
-                                         attributes,
-                                         &newPixelBuffer)
-
-        guard status == kCVReturnSuccess, let outputPixelBuffer = newPixelBuffer else {
-            print("Error creating pixel buffer.")
+        if assetWriter.status == .failed {
+            if let error = assetWriter.error {
+                print("Asset Writer Error: \(error.localizedDescription)")
+            }
             return
         }
 
-        // Render the CIImage into the pixel buffer
-        let context = CIContext()
-        context.render(rotatedImage, to: outputPixelBuffer)
+        if assetWriterInput.isReadyForMoreMediaData {
+            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+            let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
 
-        // Append pixel buffer to asset writer
-        let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        pixelBufferAdaptor.append(outputPixelBuffer, withPresentationTime: presentationTime)
+            // Apply rotation to ciImage
+            let rotatedImage = ciImage.transformed(by: CGAffineTransform(rotationAngle: CGFloat(-currentRotationAngle)))
+
+            // Create a new pixel buffer
+            var newPixelBuffer: CVPixelBuffer?
+            let pixelBufferAttributes = [
+                kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
+                kCVPixelBufferWidthKey as String: self.videoWidth,
+                kCVPixelBufferHeightKey as String: self.videoHeight
+            ] as [String: Any]
+
+            let status = CVPixelBufferCreate(kCFAllocatorDefault,
+                                             self.videoWidth,
+                                             self.videoHeight,
+                                             kCVPixelFormatType_32BGRA,
+                                             pixelBufferAttributes as CFDictionary,
+                                             &newPixelBuffer)
+
+            guard status == kCVReturnSuccess, let outputPixelBuffer = newPixelBuffer else {
+                print("Error creating pixel buffer.")
+                return
+            }
+
+            // Render the rotated image into the new pixel buffer
+            let contextOptions = [CIContextOption.useSoftwareRenderer: false]
+            let context = CIContext(options: contextOptions)
+            context.render(rotatedImage, to: outputPixelBuffer)
+
+            // Append pixel buffer to asset writer
+            if !pixelBufferAdaptor.append(outputPixelBuffer, withPresentationTime: presentationTime) {
+                print("Failed to append pixel buffer.")
+                if let error = assetWriter.error {
+                    print("Asset Writer Error during append: \(error.localizedDescription)")
+                }
+            }
+        } else {
+            print("Asset Writer Input not ready for more media data.")
+        }
     }
 }
+
