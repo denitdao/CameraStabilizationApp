@@ -235,6 +235,17 @@ class CameraViewController: UIViewController {
 
     func startRecording() {
         let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("output.mov")
+
+        // Remove existing file if necessary
+        if FileManager.default.fileExists(atPath: outputURL.path) {
+            do {
+                try FileManager.default.removeItem(at: outputURL)
+            } catch {
+                print("Could not remove file at url: \(outputURL)")
+                return
+            }
+        }
+
         do {
             assetWriter = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
 
@@ -256,9 +267,10 @@ class CameraViewController: UIViewController {
             pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
                 assetWriterInput: assetWriterInput,
                 sourcePixelBufferAttributes: [
-                    kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
+                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
                     kCVPixelBufferWidthKey as String: videoWidth,
-                    kCVPixelBufferHeightKey as String: videoHeight
+                    kCVPixelBufferHeightKey as String: videoHeight,
+                    kCVPixelBufferIOSurfacePropertiesKey as String: [:]
                 ]
             )
 
@@ -286,6 +298,7 @@ class CameraViewController: UIViewController {
             } else {
                 if let error = self.assetWriter.error {
                     print("Asset Writer Error: \(error.localizedDescription)")
+                    print("Asset Writer Error Details: \(error)")
                 } else {
                     print("Asset Writer Error: Unknown error")
                 }
@@ -346,15 +359,20 @@ extension CameraViewController: AVCaptureVideoDataOutputSampleBufferDelegate {
         let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
         // Start asset writer when first sample buffer is received
-        if assetWriter.status == .unknown {
+        switch assetWriter.status {
+        case .unknown:
             assetWriter.startWriting()
             assetWriter.startSession(atSourceTime: presentationTime)
-        }
-
-        if assetWriter.status == .failed {
+        case .writing:
+            // Continue as normal
+            break
+        case .failed, .cancelled, .completed:
             if let error = assetWriter.error {
                 print("Asset Writer Error: \(error.localizedDescription)")
+                print("Asset Writer Error Details: \(error)")
             }
+            return
+        default:
             return
         }
 
@@ -368,9 +386,10 @@ extension CameraViewController: AVCaptureVideoDataOutputSampleBufferDelegate {
             // Create a new pixel buffer
             var newPixelBuffer: CVPixelBuffer?
             let pixelBufferAttributes = [
-                kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
                 kCVPixelBufferWidthKey as String: self.videoWidth,
-                kCVPixelBufferHeightKey as String: self.videoHeight
+                kCVPixelBufferHeightKey as String: self.videoHeight,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:]
             ] as [String: Any]
 
             let status = CVPixelBufferCreate(kCFAllocatorDefault,
