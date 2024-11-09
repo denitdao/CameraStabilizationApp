@@ -384,7 +384,6 @@ extension CameraViewController: AVCaptureVideoDataOutputSampleBufferDelegate {
             assetWriter.startWriting()
             assetWriter.startSession(atSourceTime: presentationTime)
         case .writing:
-            // Continue as normal
             break
         case .failed, .cancelled, .completed:
             if let error = assetWriter.error {
@@ -400,10 +399,17 @@ extension CameraViewController: AVCaptureVideoDataOutputSampleBufferDelegate {
             guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
             let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
 
-            // Apply rotation using currentRotationAngle with initial offset corrected
-            let rotatedImage = ciImage.transformed(by: CGAffineTransform(rotationAngle: CGFloat(currentRotationAngle)))
+            // Center the rotation by translating to the center, applying rotation, then translating back
+            let centerTransform = CGAffineTransform(translationX: -CGFloat(videoWidth) / 2, y: -CGFloat(videoHeight) / 2)
+            let rotationTransform = CGAffineTransform(rotationAngle: CGFloat(currentRotationAngle))
+            let backTransform = CGAffineTransform(translationX: CGFloat(videoWidth) / 2, y: CGFloat(videoHeight) / 2)
 
-            // Your existing code for creating a new pixel buffer and appending to asset writer
+            let transformedImage = ciImage
+                .transformed(by: centerTransform)      // Move to center
+                .transformed(by: rotationTransform)     // Apply rotation
+                .transformed(by: backTransform)         // Move back
+
+            // Create a new pixel buffer for the rotated image
             var newPixelBuffer: CVPixelBuffer?
             let pixelBufferAttributes = [
                 kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
@@ -427,7 +433,7 @@ extension CameraViewController: AVCaptureVideoDataOutputSampleBufferDelegate {
             // Render the rotated image into the new pixel buffer
             let contextOptions = [CIContextOption.useSoftwareRenderer: false]
             let context = CIContext(options: contextOptions)
-            context.render(rotatedImage, to: outputPixelBuffer)
+            context.render(transformedImage, to: outputPixelBuffer)
 
             // Append pixel buffer to asset writer
             if !pixelBufferAdaptor.append(outputPixelBuffer, withPresentationTime: presentationTime) {
