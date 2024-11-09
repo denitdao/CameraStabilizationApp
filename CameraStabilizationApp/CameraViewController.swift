@@ -29,6 +29,8 @@ class CameraViewController: UIViewController {
 
     let motionManager = CMMotionManager()
     var currentRotationAngle: Double = 0.0
+    var previousRotationAngle: Double = 0.0
+    let filterFactor: Double = 0.9  // Adjust between 0.0 (no filtering) and 1.0 (maximum filtering)
 
     // MARK: - View Lifecycle
     override func viewDidLoad() {
@@ -207,21 +209,32 @@ class CameraViewController: UIViewController {
         let gravity = motion.gravity
         let x = gravity.x
         let y = gravity.y
-        let angle = atan2(x, y) - .pi
-        currentRotationAngle = angle
-        applyRotation(angle)
+
+        // Compute the tilt angle around the Z-axis
+        var tiltAngle = atan2(y, x) - .pi / 2
+
+        // Normalize angle to range [-π, π]
+        if tiltAngle > .pi {
+            tiltAngle -= 2 * .pi
+        } else if tiltAngle < -.pi {
+            tiltAngle += 2 * .pi
+        }
+
+        // Apply low-pass filter
+        currentRotationAngle = (filterFactor * previousRotationAngle) + ((1 - filterFactor) * tiltAngle)
+        previousRotationAngle = currentRotationAngle
+
+        applyRotation(currentRotationAngle)
     }
 
     func applyRotation(_ angle: Double) {
         guard let previewLayer = self.videoPreviewLayer else {
-            // Optionally log a message or handle the nil case
             print("Warning: videoPreviewLayer is nil in applyRotation")
             return
         }
 
-        UIView.animate(withDuration: 0.1) {
-            previewLayer.setAffineTransform(CGAffineTransform(rotationAngle: CGFloat(-angle)))
-        }
+        // Apply rotation immediately without animation
+        previewLayer.setAffineTransform(CGAffineTransform(rotationAngle: CGFloat(angle)))
     }
 
     // MARK: - Other Methods
@@ -380,8 +393,11 @@ extension CameraViewController: AVCaptureVideoDataOutputSampleBufferDelegate {
             guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
             let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
 
-            // Apply rotation to ciImage
-            let rotatedImage = ciImage.transformed(by: CGAffineTransform(rotationAngle: CGFloat(-currentRotationAngle)))
+            // Apply rotation to ciImage using currentRotationAngle
+            let rotatedImage = ciImage.transformed(by: CGAffineTransform(rotationAngle: CGFloat(currentRotationAngle)))
+
+            // Rest of your code for creating new pixel buffer and appending to asset writer...
+            // [Your existing code to create a new pixel buffer and render the rotated image]
 
             // Create a new pixel buffer
             var newPixelBuffer: CVPixelBuffer?
