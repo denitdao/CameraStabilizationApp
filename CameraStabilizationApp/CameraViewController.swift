@@ -1,13 +1,5 @@
-//
-//  CameraViewController.swift
-//  CameraStabilizationApp
-//
-//  Created by Denys Churchyn on 09.11.2024.
-//
-
 import UIKit
 import AVFoundation
-import CoreMotion
 import Photos
 
 class CameraViewController: UIViewController {
@@ -18,147 +10,76 @@ class CameraViewController: UIViewController {
     var captureSession: AVCaptureSession!
     var videoPreviewLayer: AVCaptureVideoPreviewLayer!
     var videoOutput: AVCaptureVideoDataOutput!
-    
-    let motionManager = CMMotionManager()
-    var currentRotationAngle: Double = 0.0
-    var previousRotationAngle: Double = 0.0
-    let filterFactor: Double = 0.9 // Adjust between 0.0 (no filtering) and 1.0 (maximum filtering)
+    var audioOutput: AVCaptureAudioDataOutput!
     
     var assetWriter: AVAssetWriter!
-    var assetWriterInput: AVAssetWriterInput!
-    var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor!
+    var videoInput: AVAssetWriterInput!
+    var audioInput: AVAssetWriterInput!
     var isRecording = false
-    var videoWidth: Int = 0
-    var videoHeight: Int = 0
+    var outputURL: URL!
     
+    var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
+    
+    // For synchronization
+    let recordingQueue = DispatchQueue(label: "recordingQueue")
     
     // MARK: - Lifecycle Methods
     override func viewDidLoad() {
         super.viewDidLoad()
-        PermissionsManager.shared.requestAllPermissions { granted in
-            if granted {
-                self.setupCameraSession()
-            } else {
-                self.showAlert(title: "Permissions Denied", message: "Please enable permissions in Settings.")
-            }
+        requestPermissions {
+            self.setupCameraSession()
         }
     }
     
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        // Start observing device orientation changes
-        NotificationCenter.default.addObserver(self, selector: #selector(orientationChanged), name: UIDevice.orientationDidChangeNotification, object: nil)
-        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // Update preview layer frame
+        videoPreviewLayer?.frame = view.bounds
     }
     
-    override func viewWillDisappear(_ animated: Bool) {
-        super.viewWillDisappear(animated)
-        // Stop observing device orientation changes
-        NotificationCenter.default.removeObserver(self, name: UIDevice.orientationDidChangeNotification, object: nil)
-        UIDevice.current.endGeneratingDeviceOrientationNotifications()
-    }
-    
-    // MARK: - UI Actions
+    // MARK: - Button State Management
     @IBAction func recordButtonTapped(_ sender: UIButton) {
+        recordButton.isEnabled = false
+        stopButton.isEnabled = true
         startRecording()
     }
-    
+
     @IBAction func stopButtonTapped(_ sender: UIButton) {
+        stopButton.isEnabled = false
         stopRecording()
     }
 }
 
 // MARK: - Permissions
-class PermissionsManager {
-    static let shared = PermissionsManager()
-
-    func requestAllPermissions(completion: @escaping (Bool) -> Void) {
-        let dispatchGroup = DispatchGroup()
-        var permissionsGranted = true
-
-        dispatchGroup.enter()
-        requestCameraPermission { granted in
-            permissionsGranted = permissionsGranted && granted
-            dispatchGroup.leave()
+extension CameraViewController {
+    func requestPermissions(completion: @escaping () -> Void) {
+        let group = DispatchGroup()
+        var permissionGranted = true
+        
+        group.enter()
+        AVCaptureDevice.requestAccess(for: .video) { granted in
+            permissionGranted = permissionGranted && granted
+            group.leave()
         }
-
-        dispatchGroup.enter()
-        requestMicrophonePermission { granted in
-            permissionsGranted = permissionsGranted && granted
-            dispatchGroup.leave()
+        
+        group.enter()
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
+            permissionGranted = permissionGranted && granted
+            group.leave()
         }
-
-        dispatchGroup.enter()
-        requestMotionPermission { granted in
-            permissionsGranted = permissionsGranted && granted
-            dispatchGroup.leave()
+        
+        group.enter()
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+            permissionGranted = permissionGranted && (status == .authorized || status == .limited)
+            group.leave()
         }
-
-        dispatchGroup.enter()
-        requestPhotoLibraryPermission { granted in
-            permissionsGranted = permissionsGranted && granted
-            dispatchGroup.leave()
-        }
-
-        dispatchGroup.notify(queue: .main) {
-            completion(permissionsGranted)
-        }
-    }
-
-    private func requestCameraPermission(completion: @escaping (Bool) -> Void) {
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
-        case .authorized:
-            completion(true)
-        case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { granted in
-                completion(granted)
+        
+        group.notify(queue: .main) {
+            if permissionGranted {
+                completion()
+            } else {
+                self.showAlert(title: "Permissions Denied", message: "Please enable permissions in Settings.")
             }
-        default:
-            completion(false)
-        }
-    }
-
-    private func requestMicrophonePermission(completion: @escaping (Bool) -> Void) {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized:
-            completion(true)
-        case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .audio) { granted in
-                completion(granted)
-            }
-        default:
-            completion(false)
-        }
-    }
-
-    private func requestMotionPermission(completion: @escaping (Bool) -> Void) {
-        if #available(iOS 11.0, *) {
-            let status = CMMotionActivityManager.authorizationStatus()
-            switch status {
-            case .authorized:
-                completion(true)
-            case .notDetermined:
-                // The system will prompt the user when starting motion updates
-                completion(true)
-            default:
-                completion(false)
-            }
-        } else {
-            completion(true)
-        }
-    }
-
-    private func requestPhotoLibraryPermission(completion: @escaping (Bool) -> Void) {
-        let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
-        switch status {
-        case .authorized, .limited:
-            completion(true)
-        case .notDetermined:
-            PHPhotoLibrary.requestAuthorization(for: .addOnly) { newStatus in
-                completion(newStatus == .authorized || newStatus == .limited)
-            }
-        default:
-            completion(false)
         }
     }
 }
@@ -166,410 +87,244 @@ class PermissionsManager {
 // MARK: - Camera Setup
 extension CameraViewController {
     func setupCameraSession() {
+        // Move capture session setup to a background queue
         DispatchQueue.global(qos: .userInitiated).async {
             self.captureSession = AVCaptureSession()
             self.captureSession.sessionPreset = .high
-
-            guard self.setupVideoInput(),
-                  self.setupAudioInput(),
-                  self.setupVideoOutput() else {
-                print("Failed to set up camera session.")
+            
+            guard let videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+                  let videoDeviceInput = try? AVCaptureDeviceInput(device: videoDevice),
+                  self.captureSession.canAddInput(videoDeviceInput) else {
+                print("Cannot add video input")
                 return
             }
-
+            self.captureSession.addInput(videoDeviceInput)
+            
+            // Initialize Rotation Coordinator
+            self.rotationCoordinator = AVCaptureDevice.RotationCoordinator(device: videoDevice, previewLayer: nil)
+            self.rotationCoordinator?.addObserver(self, forKeyPath: #keyPath(AVCaptureDevice.RotationCoordinator.videoRotationAngleForHorizonLevelCapture), options: [.new], context: nil)
+            self.rotationCoordinator?.addObserver(self, forKeyPath: #keyPath(AVCaptureDevice.RotationCoordinator.videoRotationAngleForHorizonLevelPreview), options: [.new], context: nil)
+            
+            guard let audioDevice = AVCaptureDevice.default(for: .audio),
+                  let audioDeviceInput = try? AVCaptureDeviceInput(device: audioDevice),
+                  self.captureSession.canAddInput(audioDeviceInput) else {
+                print("Cannot add audio input")
+                return
+            }
+            self.captureSession.addInput(audioDeviceInput)
+            
+            self.videoOutput = AVCaptureVideoDataOutput()
+            self.videoOutput.setSampleBufferDelegate(self, queue: self.recordingQueue)
+            guard self.captureSession.canAddOutput(self.videoOutput) else {
+                print("Cannot add video output")
+                return
+            }
+            self.captureSession.addOutput(self.videoOutput)
+            
+            self.audioOutput = AVCaptureAudioDataOutput()
+            self.audioOutput.setSampleBufferDelegate(self, queue: self.recordingQueue)
+            guard self.captureSession.canAddOutput(self.audioOutput) else {
+                print("Cannot add audio output")
+                return
+            }
+            self.captureSession.addOutput(self.audioOutput)
+            
+            // Start capture session in background to avoid blocking UI
             self.captureSession.startRunning()
-
+            
+            // Move UI updates back to the main queue
             DispatchQueue.main.async {
                 self.setupPreviewLayer()
-                self.startDeviceMotionUpdates()
             }
         }
     }
-
-    func setupVideoInput() -> Bool {
-        let discoverySession = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInWideAngleCamera, .builtInDualCamera, .builtInTripleCamera, .builtInTrueDepthCamera],
-            mediaType: .video,
-            position: .unspecified
-        )
-
-        guard let videoDevice = discoverySession.devices.first else {
-            print("Error: No camera devices are available.")
-            return false
-        }
-
-        do {
-            let videoInput = try AVCaptureDeviceInput(device: videoDevice)
-            if self.captureSession.canAddInput(videoInput) {
-                self.captureSession.addInput(videoInput)
-
-                // Get video dimensions
-                let dimensions = CMVideoFormatDescriptionGetDimensions(videoDevice.activeFormat.formatDescription)
-                self.videoWidth = Int(dimensions.width)
-                self.videoHeight = Int(dimensions.height)
-            } else {
-                print("Error: Cannot add video input to the session.")
-                return false
-            }
-        } catch {
-            print("Error creating video input: \(error.localizedDescription)")
-            return false
-        }
-
-        return true
-    }
-
-    func setupAudioInput() -> Bool {
-        guard let audioDevice = AVCaptureDevice.default(for: .audio) else {
-            print("Error: No audio devices are available.")
-            return false
-        }
-
-        do {
-            let audioInput = try AVCaptureDeviceInput(device: audioDevice)
-            if self.captureSession.canAddInput(audioInput) {
-                self.captureSession.addInput(audioInput)
-            } else {
-                print("Error: Cannot add audio input to the session.")
-                return false
-            }
-        } catch {
-            print("Error creating audio input: \(error.localizedDescription)")
-            return false
-        }
-
-        return true
-    }
-
-    func setupVideoOutput() -> Bool {
-        self.videoOutput = AVCaptureVideoDataOutput()
-        self.videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
-        self.videoOutput.setSampleBufferDelegate(self, queue: DispatchQueue(label: "videoQueue"))
-        if self.captureSession.canAddOutput(self.videoOutput) {
-            self.captureSession.addOutput(self.videoOutput)
-            return true
-        } else {
-            print("Error: Cannot add video output to the session.")
-            return false
-        }
-    }
-
+    
     func setupPreviewLayer() {
-        self.videoPreviewLayer = AVCaptureVideoPreviewLayer(session: self.captureSession)
-        self.videoPreviewLayer.videoGravity = .resizeAspectFill
-        self.videoPreviewLayer.frame = self.view.bounds
-        self.view.layer.insertSublayer(self.videoPreviewLayer, at: 0)
-
-        // Set initial orientation
-        if let connection = self.videoPreviewLayer.connection {
-            connection.videoOrientation = .portrait
-        }
-    }
-}
-
-// MARK: - Motion Handling
-extension CameraViewController {
-    func startDeviceMotionUpdates() {
-        if motionManager.isDeviceMotionAvailable {
-            motionManager.deviceMotionUpdateInterval = 1.0 / 60.0 // 60 Hz
-            motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { (motion, error) in
-                if let error = error {
-                    print("Motion update error: \(error.localizedDescription)")
-                    return
-                }
-                guard let motion = motion else { return }
-                self.handleDeviceMotionUpdate(motion)
-            }
-        } else {
-            print("Device motion not available.")
-            // Handle the absence of device motion.
-        }
-    }
-
-    func handleDeviceMotionUpdate(_ motion: CMDeviceMotion) {
-        let gravity = motion.gravity
-        let x = gravity.x
-        let y = gravity.y
-
-        var tiltAngle: Double = 0.0
-        let deviceOrientation = UIDevice.current.orientation
-
-        switch deviceOrientation {
-        case .portrait:
-            tiltAngle = atan2(y, x) - .pi / 2
-        case .landscapeRight:
-            tiltAngle = atan2(-x, y) - .pi / 2
-        case .landscapeLeft:
-            tiltAngle = atan2(x, -y) - .pi / 2
-        case .portraitUpsideDown:
-            tiltAngle = atan2(-y, -x) - .pi / 2
-        default:
-            tiltAngle = atan2(y, x) - .pi / 2
-        }
-
-        tiltAngle = -tiltAngle
-
-        // Normalize angle to range [-π, π]
-        if tiltAngle > .pi {
-            tiltAngle -= 2 * .pi
-        } else if tiltAngle < -.pi {
-            tiltAngle += 2 * .pi
-        }
-
-        // Apply filter factor
-        currentRotationAngle = filterFactor * previousRotationAngle + (1 - filterFactor) * tiltAngle
-        previousRotationAngle = currentRotationAngle
-
-        applyRotation(currentRotationAngle)
-    }
-
-    func applyRotation(_ angle: Double) {
-        guard let previewLayer = self.videoPreviewLayer else {
-            print("Warning: videoPreviewLayer is nil in applyRotation")
-            return
-        }
-
-        // Apply rotation immediately without animation
-        previewLayer.setAffineTransform(CGAffineTransform(rotationAngle: CGFloat(angle)))
-    }
-
-    @objc func orientationChanged() {
-        guard let connection = videoPreviewLayer?.connection,
-              let videoConnection = videoOutput.connection(with: .video) else { return }
-
-        let deviceOrientation = UIDevice.current.orientation
-
-        switch deviceOrientation {
-        case .portrait:
-            connection.videoOrientation = .portrait
-            videoConnection.videoOrientation = .portrait
-        case .landscapeRight:
-            connection.videoOrientation = .landscapeLeft
-            videoConnection.videoOrientation = .landscapeLeft
-        case .landscapeLeft:
-            connection.videoOrientation = .landscapeRight
-            videoConnection.videoOrientation = .landscapeRight
-        case .portraitUpsideDown:
-            connection.videoOrientation = .portraitUpsideDown
-            videoConnection.videoOrientation = .portraitUpsideDown
-        default:
-            connection.videoOrientation = .portrait
-            videoConnection.videoOrientation = .portrait
-        }
-
-        // Adjust the preview layer frame
-        videoPreviewLayer.frame = self.view.bounds
+        videoPreviewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
+        videoPreviewLayer.videoGravity = .resizeAspectFill
+        videoPreviewLayer.frame = view.bounds
+        view.layer.insertSublayer(videoPreviewLayer, at: 0)
     }
 }
 
 // MARK: - Recording
 extension CameraViewController {
     func startRecording() {
-        let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("output.mov")
-
-        // Remove existing file if necessary
-        if FileManager.default.fileExists(atPath: outputURL.path) {
+        isRecording = true
+        outputURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
+        
+        recordingQueue.async {
             do {
-                try FileManager.default.removeItem(at: outputURL)
+                self.assetWriter = try AVAssetWriter(outputURL: self.outputURL, fileType: .mov)
+                
+                // Video Input Settings
+                let videoSettings = self.videoOutput.recommendedVideoSettingsForAssetWriter(writingTo: .mov)
+                self.videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+                self.videoInput.expectsMediaDataInRealTime = true
+                
+                // Apply initial rotation transform before starting writing
+                if let rotationCoordinator = self.rotationCoordinator {
+                    let rotationAngleDegrees = rotationCoordinator.videoRotationAngleForHorizonLevelCapture
+                    let rotationAngleRadians = rotationAngleDegrees * (.pi / 180)
+                    self.videoInput.transform = CGAffineTransform(rotationAngle: rotationAngleRadians)
+                }
+                
+                if self.assetWriter.canAdd(self.videoInput) {
+                    self.assetWriter.add(self.videoInput)
+                } else {
+                    print("Cannot add video input to asset writer")
+                    self.resetRecordingState()
+                    return
+                }
+                
+                // Audio Input Settings
+                let audioSettings = self.audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mov)
+                self.audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+                self.audioInput.expectsMediaDataInRealTime = true
+                if self.assetWriter.canAdd(self.audioInput) {
+                    self.assetWriter.add(self.audioInput)
+                } else {
+                    print("Cannot add audio input to asset writer")
+                    self.resetRecordingState()
+                    return
+                }
+                
+                print("Asset writer initialized.")
+                // Do NOT call startWriting() here
             } catch {
-                print("Could not remove file at url: \(outputURL)")
-                return
+                print("Error setting up asset writer: \(error)")
+                self.resetRecordingState()
             }
-        }
-
-        do {
-            assetWriter = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
-
-            let videoWidth = self.videoWidth
-            let videoHeight = self.videoHeight
-
-            let outputSettings: [String: Any] = [
-                AVVideoCodecKey: AVVideoCodecType.h264,
-                AVVideoWidthKey: videoWidth,
-                AVVideoHeightKey: videoHeight,
-                AVVideoCompressionPropertiesKey: [
-                    AVVideoAverageBitRateKey: NSNumber(value: 6000000),
-                    AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
-                ]
-            ]
-            assetWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: outputSettings)
-            assetWriterInput.expectsMediaDataInRealTime = true
-
-            // Determine the video orientation transform
-            let currentOrientation = UIDevice.current.orientation
-            var rotationAngle: CGFloat = 0.0
-
-            switch currentOrientation {
-            case .portrait:
-                rotationAngle = 0.0
-            case .landscapeRight:
-                rotationAngle = CGFloat(-Double.pi / 2)
-            case .landscapeLeft:
-                rotationAngle = CGFloat(Double.pi / 2)
-            case .portraitUpsideDown:
-                rotationAngle = CGFloat(Double.pi)
-            default:
-                rotationAngle = 0.0
-            }
-
-            assetWriterInput.transform = CGAffineTransform(rotationAngle: rotationAngle)
-
-            pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
-                assetWriterInput: assetWriterInput,
-                sourcePixelBufferAttributes: [
-                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                    kCVPixelBufferWidthKey as String: videoWidth,
-                    kCVPixelBufferHeightKey as String: videoHeight,
-                    kCVPixelBufferIOSurfacePropertiesKey as String: [:]
-                ]
-            )
-
-            if assetWriter.canAdd(assetWriterInput) {
-                assetWriter.add(assetWriterInput)
-            } else {
-                print("Cannot add asset writer input.")
-                return
-            }
-
-            // Do not start writing yet; start when the first sample buffer is received
-            isRecording = true
-        } catch {
-            print("Error setting up asset writer: \(error)")
         }
     }
 
     func stopRecording() {
         isRecording = false
-        assetWriterInput.markAsFinished()
-        assetWriter.finishWriting {
-            print("Recording finished.")
-            if self.assetWriter.status == .completed {
-                self.saveVideoToPhotoLibrary(url: self.assetWriter.outputURL)
-            } else {
-                if let error = self.assetWriter.error {
-                    print("Asset Writer Error: \(error.localizedDescription)")
-                    print("Asset Writer Error Details: \(error)")
-                } else {
-                    print("Asset Writer Error: Unknown error")
+        guard assetWriter != nil else {
+            print("Asset writer is nil.")
+            resetRecordingState()
+            return
+        }
+        
+        recordingQueue.async {
+            if self.assetWriter.status == .writing || self.assetWriter.status == .unknown {
+                self.assetWriter.finishWriting {
+                    DispatchQueue.main.async {
+                        if self.assetWriter.status == .completed {
+                            self.saveVideoToPhotoLibrary(url: self.outputURL)
+                        } else {
+                            print("Asset writer did not complete successfully.")
+                            if let error = self.assetWriter.error {
+                                print("Asset Writer Error: \(error.localizedDescription)")
+                            }
+                            self.resetRecordingState()
+                        }
+                    }
                 }
+            } else {
+                print("Asset writer is not in a valid state to finish writing.")
+                self.resetRecordingState()
             }
         }
     }
-
+    
+    func resetRecordingState() {
+        DispatchQueue.main.async {
+            self.isRecording = false
+            self.recordButton.isEnabled = true
+            self.stopButton.isEnabled = false
+            self.assetWriter = nil
+            self.videoInput = nil
+            self.audioInput = nil
+        }
+    }
+    
     func saveVideoToPhotoLibrary(url: URL) {
-        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
-            switch status {
-            case .authorized, .limited:
-                PHPhotoLibrary.shared().performChanges({
-                    PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
-                }) { saved, error in
-                    if let error = error {
-                        print("Error saving video: \(error.localizedDescription)")
-                    } else {
-                        print("Video saved successfully.")
-                    }
+        PHPhotoLibrary.shared().performChanges({
+            PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
+        }) { saved, error in
+            DispatchQueue.main.async {
+                if saved {
+                    print("Video saved successfully.")
+                    self.resetRecordingState()
+                } else if let error = error {
+                    print("Error saving video: \(error)")
+                    self.resetRecordingState()
                 }
-            case .denied, .restricted:
-                print("Photo Library access denied.")
-                self.showAlert(title: "Photo Library Access Denied", message: "Please enable access in Settings.")
-            case .notDetermined:
-                // Should not reach here
-                break
-            @unknown default:
-                break
             }
         }
     }
 }
 
-// MARK: - Video Processing
-extension CameraViewController: AVCaptureVideoDataOutputSampleBufferDelegate {
+// MARK: - AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate
+extension CameraViewController: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard isRecording else { return }
-
-        let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-
-        // Start asset writer when first sample buffer is received
-        switch assetWriter.status {
-        case .unknown:
-            assetWriter.startWriting()
-            assetWriter.startSession(atSourceTime: presentationTime)
-        case .writing:
-            break
-        case .failed, .cancelled, .completed:
-            if let error = assetWriter.error {
-                print("Asset Writer Error: \(error.localizedDescription)")
-                print("Asset Writer Error Details: \(error)")
-            }
-            return
-        default:
-            return
+        guard self.isRecording else { return }
+        
+        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        
+        if self.assetWriter.status == .unknown {
+            self.assetWriter.startWriting()
+            self.assetWriter.startSession(atSourceTime: timestamp)
+            print("Asset writer started writing and session started at \(timestamp)")
         }
-
-        if assetWriterInput.isReadyForMoreMediaData {
-            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-            let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-
-            // Adjust transformations based on device orientation
-            let deviceOrientation = UIDevice.current.orientation
-            var rotationTransform: CGAffineTransform
-
-            switch deviceOrientation {
-            case .portrait:
-                rotationTransform = CGAffineTransform(rotationAngle: CGFloat(currentRotationAngle))
-            case .landscapeRight:
-                rotationTransform = CGAffineTransform(rotationAngle: CGFloat(currentRotationAngle - .pi / 2))
-            case .landscapeLeft:
-                rotationTransform = CGAffineTransform(rotationAngle: CGFloat(currentRotationAngle + .pi / 2))
-            case .portraitUpsideDown:
-                rotationTransform = CGAffineTransform(rotationAngle: CGFloat(currentRotationAngle + .pi))
-            default:
-                rotationTransform = CGAffineTransform(rotationAngle: CGFloat(currentRotationAngle))
-            }
-
-            // Center the rotation
-            let centerTransform = CGAffineTransform(translationX: -CGFloat(videoWidth) / 2, y: -CGFloat(videoHeight) / 2)
-            let backTransform = CGAffineTransform(translationX: CGFloat(videoWidth) / 2, y: CGFloat(videoHeight) / 2)
-
-            let transformedImage = ciImage
-                .transformed(by: centerTransform)
-                .transformed(by: rotationTransform)
-                .transformed(by: backTransform)
-
-            // Create a new pixel buffer for the rotated image
-            var newPixelBuffer: CVPixelBuffer?
-            let pixelBufferAttributes = [
-                kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
-                kCVPixelBufferWidthKey as String: self.videoWidth,
-                kCVPixelBufferHeightKey as String: self.videoHeight,
-                kCVPixelBufferIOSurfacePropertiesKey as String: [:]
-            ] as [String: Any]
-
-            let status = CVPixelBufferCreate(kCFAllocatorDefault,
-                                             self.videoWidth,
-                                             self.videoHeight,
-                                             kCVPixelFormatType_32BGRA,
-                                             pixelBufferAttributes as CFDictionary,
-                                             &newPixelBuffer)
-
-            guard status == kCVReturnSuccess, let outputPixelBuffer = newPixelBuffer else {
-                print("Error creating pixel buffer.")
-                return
-            }
-
-            // Render the rotated image into the new pixel buffer
-            let context = CIContext(options: nil)
-            context.render(transformedImage, to: outputPixelBuffer)
-
-            // Append pixel buffer to asset writer
-            if !pixelBufferAdaptor.append(outputPixelBuffer, withPresentationTime: presentationTime) {
-                print("Failed to append pixel buffer.")
-                if let error = assetWriter.error {
-                    print("Asset Writer Error during append: \(error.localizedDescription)")
+        
+        if self.assetWriter.status == .writing {
+            if output == self.videoOutput, self.videoInput.isReadyForMoreMediaData {
+                if !self.videoInput.append(sampleBuffer) {
+                    print("Failed to append video sample buffer")
+                    if let error = self.assetWriter.error {
+                        print("Video Input Error: \(error.localizedDescription)")
+                    }
+                }
+            } else if output == self.audioOutput, self.audioInput.isReadyForMoreMediaData {
+                if !self.audioInput.append(sampleBuffer) {
+                    print("Failed to append audio sample buffer")
+                    if let error = self.assetWriter.error {
+                        print("Audio Input Error: \(error.localizedDescription)")
+                    }
                 }
             }
-        } else {
-            print("Asset Writer Input not ready for more media data.")
+        } else if self.assetWriter.status == .failed {
+            if let error = self.assetWriter.error {
+                print("Asset writer error: \(error.localizedDescription)")
+            }
+            self.resetRecordingState()
+        }
+    }
+}
+
+// MARK: - Observing Rotation
+extension CameraViewController {
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?,     context: UnsafeMutableRawPointer?) {
+        guard let rotationCoordinator = object as? AVCaptureDevice.RotationCoordinator else {
+            return
+        }
+        
+        if keyPath == #keyPath(AVCaptureDevice.RotationCoordinator.videoRotationAngleForHorizonLevelCapture) {
+            let rotationAngleDegrees = rotationCoordinator.videoRotationAngleForHorizonLevelCapture
+            print("Rotation angle for capture: \(rotationAngleDegrees) degrees")
+            
+            // Update the video connection's rotation angle
+            if let videoConnection = self.videoOutput.connection(with: .video) {
+                if videoConnection.isVideoRotationAngleSupported(rotationAngleDegrees) {
+                    videoConnection.videoRotationAngle = rotationAngleDegrees
+                } else {
+                    print("Video rotation angle \(rotationAngleDegrees) not supported for video connection.")
+                }
+            }
+        } else if keyPath == #keyPath(AVCaptureDevice.RotationCoordinator.videoRotationAngleForHorizonLevelPreview) {
+            let rotationAngleDegrees = rotationCoordinator.videoRotationAngleForHorizonLevelPreview
+            print("Rotation angle for preview: \(rotationAngleDegrees) degrees")
+            
+            // Update the preview layer's rotation angle
+            if let previewConnection = self.videoPreviewLayer.connection {
+                if previewConnection.isVideoRotationAngleSupported(rotationAngleDegrees) {
+                    previewConnection.videoRotationAngle = rotationAngleDegrees
+                } else {
+                    print("Video rotation angle \(rotationAngleDegrees) not supported for preview connection.")
+                }
+            }
         }
     }
 }
