@@ -16,18 +16,16 @@
                         <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
                         <subviews>
-                            <button opaque="NO" contentMode="scaleToFill" fixedFrame="YES" contentHorizontalAlignment="center" contentVerticalAlignment="center" buttonType="system" lineBreakMode="middleTruncation" translatesAutoresizingMaskIntoConstraints="NO" id="l9T-pK-22Q">
+                            <button opaque="NO" contentMode="scaleToFill" contentHorizontalAlignment="center" contentVerticalAlignment="center" buttonType="system" lineBreakMode="middleTruncation" translatesAutoresizingMaskIntoConstraints="NO" id="l9T-pK-22Q">
                                 <rect key="frame" x="110" y="765" width="79" height="35"/>
-                                <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMaxY="YES"/>
                                 <state key="normal" title="Button"/>
                                 <buttonConfiguration key="configuration" style="filled" title="Record"/>
                                 <connections>
                                     <action selector="recordButtonTapped:" destination="XYP-0S-Z0M" eventType="touchUpInside" id="8yH-or-gsr"/>
                                 </connections>
                             </button>
-                            <button opaque="NO" contentMode="scaleToFill" fixedFrame="YES" contentHorizontalAlignment="center" contentVerticalAlignment="center" buttonType="system" lineBreakMode="middleTruncation" translatesAutoresizingMaskIntoConstraints="NO" id="gbJ-uF-qsE">
+                            <button opaque="NO" contentMode="scaleToFill" contentHorizontalAlignment="center" contentVerticalAlignment="center" buttonType="system" lineBreakMode="middleTruncation" translatesAutoresizingMaskIntoConstraints="NO" id="gbJ-uF-qsE">
                                 <rect key="frame" x="230" y="764" width="60" height="35"/>
-                                <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMaxY="YES"/>
                                 <state key="normal" title="Button"/>
                                 <buttonConfiguration key="configuration" style="filled" title="Stop">
                                     <color key="baseBackgroundColor" systemColor="systemRedColor"/>
@@ -39,6 +37,12 @@
                         </subviews>
                         <viewLayoutGuide key="safeArea" id="AKF-hL-lvO"/>
                         <color key="backgroundColor" systemColor="systemBackgroundColor"/>
+                        <constraints>
+                            <constraint firstItem="l9T-pK-22Q" firstAttribute="top" secondItem="AKF-hL-lvO" secondAttribute="top" constant="706" id="L7a-gG-4oL"/>
+                            <constraint firstItem="l9T-pK-22Q" firstAttribute="leading" secondItem="AKF-hL-lvO" secondAttribute="leading" constant="110" id="eb7-GH-FkW"/>
+                            <constraint firstItem="gbJ-uF-qsE" firstAttribute="top" secondItem="AKF-hL-lvO" secondAttribute="top" constant="705" id="ol3-kV-gPP"/>
+                            <constraint firstItem="gbJ-uF-qsE" firstAttribute="leading" secondItem="l9T-pK-22Q" secondAttribute="trailing" constant="41" id="rq3-iM-0zc"/>
+                        </constraints>
                     </view>
                     <connections>
                         <outlet property="recordButton" destination="l9T-pK-22Q" id="7UX-1E-zK0"/>
