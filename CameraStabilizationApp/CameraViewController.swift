@@ -27,6 +27,7 @@ class CameraViewController: UIViewController {
     var motionManager: CMMotionManager!
     let recordingQueue = DispatchQueue(label: "recordingQueue")
     private var currentRotationAngle: Double = 0.0
+    private var currentScaleFactor: Double = 1.0
     
     // MARK: - Lifecycle Methods
     override func viewDidLoad() {
@@ -74,22 +75,36 @@ class CameraViewController: UIViewController {
         
         // Calculate the tilt angle around the Z-axis relative to gravity
         var tiltAngle = atan2(y, x) - .pi / 2
-
-        // Apply a 180-degree correction
-        tiltAngle += .pi  // Add π to rotate everything by 180 degrees
-
+        tiltAngle += .pi  // Apply 180-degree correction
         tiltAngle = -tiltAngle
-
-        // Normalize angle to range [-π, π] to prevent unexpected flips
+        
+        // Normalize angle to range [-π, π]
         if tiltAngle > .pi {
             tiltAngle -= 2 * .pi
         } else if tiltAngle < -.pi {
             tiltAngle += 2 * .pi
         }
-
+        
+        // Calculate rotated frame bounds
+        let angle = tiltAngle
+        let cosTheta = abs(cos(angle))
+        let sinTheta = abs(sin(angle))
+        
+        // Dimensions of the rotated frame bounding box
+        let rotatedWidth = CGFloat(videoWidth) * cosTheta + CGFloat(videoHeight) * sinTheta
+        let rotatedHeight = CGFloat(videoWidth) * sinTheta + CGFloat(videoHeight) * cosTheta
+        
+        // Compute scale factor to ensure base frame fully fits inside the rotated frame
+        let scaleX = rotatedWidth / CGFloat(videoWidth)
+        let scaleY = rotatedHeight / CGFloat(videoHeight)
+        
+        // Use the larger scale factor to zoom in enough in both dimensions
+        let scaleFactor = max(scaleX, scaleY)
+        
         currentRotationAngle = tiltAngle
+        currentScaleFactor = Double(scaleFactor)
     }
-
+    
     // MARK: - Camera Setup
     func setupCameraSession() {
         DispatchQueue.global(qos: .userInitiated).async {
@@ -185,8 +200,8 @@ class CameraViewController: UIViewController {
             assetWriterInput.expectsMediaDataInRealTime = true
             
             // Apply a clockwise 90-degree rotation
-            assetWriterInput.transform = CGAffineTransform(rotationAngle: .pi / 2)
-
+            assetWriterInput.transform = CGAffineTransform(rotationAngle: .pi / 2)  // should be rotated based on current device position
+            
             pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
                 assetWriterInput: assetWriterInput,
                 sourcePixelBufferAttributes: [
@@ -328,16 +343,21 @@ extension CameraViewController: AVCaptureVideoDataOutputSampleBufferDelegate, AV
             
             let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
             
-            // Calculate center based on swapped dimensions for proper rotation
+            // Calculate transformations: center, rotate, scale, translate back
             let centerTransform = CGAffineTransform(translationX: -CGFloat(videoWidth) / 2, y: -CGFloat(videoHeight) / 2)
             let rotationTransform = CGAffineTransform(rotationAngle: CGFloat(currentRotationAngle))
+            let scaleTransform = CGAffineTransform(scaleX: CGFloat(currentScaleFactor), y: CGFloat(currentScaleFactor))
             let backTransform = CGAffineTransform(translationX: CGFloat(videoWidth) / 2, y: CGFloat(videoHeight) / 2)
-
-            let transformedImage = ciImage
-                .transformed(by: centerTransform)      // Move to center
-                .transformed(by: rotationTransform)     // Apply rotation
-                .transformed(by: backTransform)         // Move back
-
+            
+            // Combine transformations
+            let transform = centerTransform
+                .concatenating(rotationTransform)
+                .concatenating(scaleTransform)
+                .concatenating(backTransform)
+            
+            // Apply the combined transformation
+            let transformedImage = ciImage.transformed(by: transform)
+            
             var outputPixelBuffer: CVPixelBuffer?
             CVPixelBufferCreate(kCFAllocatorDefault,
                                 videoWidth,
@@ -347,6 +367,7 @@ extension CameraViewController: AVCaptureVideoDataOutputSampleBufferDelegate, AV
                                 &outputPixelBuffer)
             
             if let outputPixelBuffer = outputPixelBuffer {
+                // Use GPU rendering when available
                 let context = CIContext(options: [.useSoftwareRenderer: false])
                 context.render(transformedImage, to: outputPixelBuffer)
                 
