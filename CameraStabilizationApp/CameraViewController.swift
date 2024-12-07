@@ -2,6 +2,7 @@ import UIKit
 import AVFoundation
 import Photos
 import CoreMotion
+import ObjectiveC
 
 // MARK: - PermissionsManager
 class PermissionsManager {
@@ -125,6 +126,12 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate, AVCapt
     }
 }
 
+// MARK: - RecordingBaselineOrientation
+enum RecordingBaselineOrientation {
+    case portrait
+    case landscape
+}
+
 // MARK: - MotionStabilizer
 class MotionStabilizer {
     private let motionManager = CMMotionManager()
@@ -133,53 +140,168 @@ class MotionStabilizer {
     
     private var videoWidth: Int = 0
     private var videoHeight: Int = 0
+    private var baselineOrientation: RecordingBaselineOrientation = .portrait
+    private var initialBaselineAngle: Double = 0.0 // quantized baseline angle
     
-    func startUpdates(videoWidth: Int, videoHeight: Int) {
+    private var updateCount = 0
+    
+    func startUpdates(videoWidth: Int, videoHeight: Int, baselineOrientation: RecordingBaselineOrientation) {
         self.videoWidth = videoWidth
         self.videoHeight = videoHeight
+        self.baselineOrientation = baselineOrientation
         
         motionManager.deviceMotionUpdateInterval = 1.0 / 60.0
-        // The updates continuously run and adjust angle & scale factor
         motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] (motion, error) in
             guard let self = self, let motion = motion else { return }
             self.updateAngleAndScale(motion: motion)
         }
     }
     
+    func stopUpdates() {
+        motionManager.stopDeviceMotionUpdates()
+    }
+    
+    func computeCurrentTiltAngle() -> Double {
+        guard let motion = motionManager.deviceMotion else { return 0.0 }
+        let x = motion.gravity.x
+        let y = motion.gravity.y
+        var angle = atan2(y, x) - .pi / 2
+        angle += .pi
+        angle = -angle
+        // Normalize
+        if angle > .pi {
+            angle -= 2 * .pi
+        } else if angle < -.pi {
+            angle += 2 * .pi
+        }
+        return angle
+    }
+    
+    func quantizeAngleToRightAngle(_ angle: Double) -> Double {
+        // angle / (π/2) -> number of quarter turns
+        let quarterTurns = angle / (Double.pi / 2)
+        let nearestQuarterTurn = round(quarterTurns)
+        return nearestQuarterTurn * (Double.pi / 2)
+    }
+    
+    func setInitialBaselineAngle() {
+        let currentAngle = computeCurrentTiltAngle()
+        initialBaselineAngle = quantizeAngleToRightAngle(currentAngle)
+        
+        if baselineOrientation == .landscape {
+            let normalized = normalizeAngle(initialBaselineAngle)
+            
+            // If quantized to exactly ±90° (±π/2):
+            if abs(normalized) == Double.pi / 2 {
+                // If it's -90°, rotate by 180° (π) to get +90°
+                if normalized < 0 {
+                    initialBaselineAngle += Double.pi
+                    initialBaselineAngle = normalizeAngle(initialBaselineAngle)
+                }
+                // If it's +90°, do nothing, since it's already correct.
+            }
+        }
+        
+        print("[DEBUG] Initial baseline angle set to \(initialBaselineAngle * 180.0 / Double.pi) degrees")
+    }
+    
+    // Helper to normalize angle to [-π, π]
+    private func normalizeAngle(_ angle: Double) -> Double {
+        var a = angle
+        if a > .pi {
+            a -= 2 * .pi
+        } else if a < -.pi {
+            a += 2 * .pi
+        }
+        return a
+    }
+    
     private func updateAngleAndScale(motion: CMDeviceMotion) {
+        updateCount += 1
+        
         let gravity = motion.gravity
         let x = gravity.x
         let y = gravity.y
         
-        // Compute rotation angle
         var tiltAngle = atan2(y, x) - .pi / 2
-        tiltAngle += .pi  // 180-degree correction
+        tiltAngle += .pi
         tiltAngle = -tiltAngle
         
-        // Normalize angle
+        // Normalize angle to [-π, π]
         if tiltAngle > .pi {
             tiltAngle -= 2 * .pi
         } else if tiltAngle < -.pi {
             tiltAngle += 2 * .pi
         }
         
-        currentRotationAngle = tiltAngle
+        // Subtract the initial baseline angle
+        var effectiveAngle = tiltAngle - initialBaselineAngle
+        if effectiveAngle > .pi {
+            effectiveAngle -= 2 * .pi
+        } else if effectiveAngle < -.pi {
+            effectiveAngle += 2 * .pi
+        }
         
-        // Compute scale factor each time angle updates
-        let angle = tiltAngle
-        let cosTheta = abs(cos(angle))
-        let sinTheta = abs(sin(angle))
+        let adjustedAngle: Double
+        switch baselineOrientation {
+        case .portrait:
+            adjustedAngle = effectiveAngle
+        case .landscape:
+            // If you need a pi/2 offset for landscape baseline, do it here:
+            // adjustedAngle = effectiveAngle - (Double.pi / 2)
+            adjustedAngle = effectiveAngle
+        }
         
-        let rotatedWidth = CGFloat(videoWidth) * cosTheta + CGFloat(videoHeight) * sinTheta
-        let rotatedHeight = CGFloat(videoWidth) * sinTheta + CGFloat(videoHeight) * cosTheta
+        currentRotationAngle = adjustedAngle
         
-        let scaleX = rotatedWidth / CGFloat(videoWidth)
-        let scaleY = rotatedHeight / CGFloat(videoHeight)
-        currentScaleFactor = Double(max(scaleX, scaleY))
-    }
-    
-    func stopUpdates() {
-        motionManager.stopDeviceMotionUpdates()
+        // Determine reference dimensions based on baseline orientation
+        let referenceWidth: Int
+        let referenceHeight: Int
+        switch baselineOrientation {
+        case .portrait:
+            referenceWidth = videoWidth
+            referenceHeight = videoHeight
+        case .landscape:
+            referenceWidth = videoHeight
+            referenceHeight = videoWidth
+        }
+        
+        let cosTheta = abs(cos(adjustedAngle))
+        let sinTheta = abs(sin(adjustedAngle))
+        
+        let rotatedWidth = CGFloat(referenceWidth) * cosTheta + CGFloat(referenceHeight) * sinTheta
+        let rotatedHeight = CGFloat(referenceWidth) * sinTheta + CGFloat(referenceHeight) * cosTheta
+        
+        let scaleX = rotatedWidth / CGFloat(referenceWidth)
+        let scaleY = rotatedHeight / CGFloat(referenceHeight)
+        let scale = Double(max(scaleX, scaleY))
+        
+        currentScaleFactor = scale
+        
+        // Print logs every 30 updates
+        if updateCount % 30 == 0 {
+            let angleDegrees = adjustedAngle * 180.0 / Double.pi
+            var phoneRotationAssumption: String
+            if angleDegrees > -45 && angleDegrees < 45 {
+                phoneRotationAssumption = "Phone is near baseline orientation"
+            } else if angleDegrees >= 45 && angleDegrees <= 135 {
+                phoneRotationAssumption = "Phone tilted ~90° in one direction"
+            } else if angleDegrees <= -45 && angleDegrees >= -135 {
+                phoneRotationAssumption = "Phone tilted ~90° in the opposite direction"
+            } else {
+                phoneRotationAssumption = "Phone possibly upside-down or beyond 90° tilt"
+            }
+            
+            print("""
+            [DEBUG] UpdateAngleAndScale (sampled):
+            Gravity: x=\(x), y=\(y)
+            tiltAngle(rad)=\(tiltAngle), effectiveAngle(rad)=\(effectiveAngle) deg=\(angleDegrees)
+            BaselineOrientation=\(baselineOrientation)
+            rotatedWidth=\(rotatedWidth), rotatedHeight=\(rotatedHeight)
+            scale=\(scale)
+            Assumption: \(phoneRotationAssumption)
+            """)
+        }
     }
 }
 
@@ -191,9 +313,10 @@ class VideoProcessor {
                         width: Int,
                         height: Int,
                         rotationAngle: Double,
-                        scaleFactor: Double) -> CVPixelBuffer? {
+                        scaleFactor: Double,
+                        baselineOrientation: RecordingBaselineOrientation) -> CVPixelBuffer? {
         
-        let transform = buildTransform(width: width, height: height, angle: rotationAngle, scale: scaleFactor)
+        let transform = buildTransform(width: width, height: height, angle: rotationAngle, scale: scaleFactor, baselineOrientation: baselineOrientation)
         let transformedImage = ciImage.transformed(by: transform)
         
         var outputPixelBuffer: CVPixelBuffer?
@@ -211,9 +334,12 @@ class VideoProcessor {
         return nil
     }
     
-    private func buildTransform(width: Int, height: Int, angle: Double, scale: Double) -> CGAffineTransform {
+    private func buildTransform(width: Int, height: Int, angle: Double, scale: Double, baselineOrientation: RecordingBaselineOrientation) -> CGAffineTransform {
+        // Remove the special offset for landscape mode:
+        let adjustedAngle = angle
+        
         let centerTransform = CGAffineTransform(translationX: -CGFloat(width)/2, y: -CGFloat(height)/2)
-        let rotationTransform = CGAffineTransform(rotationAngle: CGFloat(angle))
+        let rotationTransform = CGAffineTransform(rotationAngle: CGFloat(adjustedAngle))
         let scaleTransform = CGAffineTransform(scaleX: CGFloat(scale), y: CGFloat(scale))
         let backTransform = CGAffineTransform(translationX: CGFloat(width)/2, y: CGFloat(height)/2)
         
@@ -233,6 +359,24 @@ class RecordingManager {
     
     let videoWidth: Int
     let videoHeight: Int
+    
+    var baselineOrientation: RecordingBaselineOrientation {
+        get { associatedBaselineOrientation ?? .portrait }
+        set { associatedBaselineOrientation = newValue }
+    }
+    
+    private struct AssociatedKeys {
+        static var baselineOrientation = "baselineOrientation"
+    }
+    
+    private var associatedBaselineOrientation: RecordingBaselineOrientation? {
+        get {
+            return objc_getAssociatedObject(self, &AssociatedKeys.baselineOrientation) as? RecordingBaselineOrientation
+        }
+        set {
+            objc_setAssociatedObject(self, &AssociatedKeys.baselineOrientation, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        }
+    }
     
     var status: AVAssetWriter.Status {
         return assetWriter?.status ?? .unknown
@@ -263,7 +407,15 @@ class RecordingManager {
         
         let vInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         vInput.expectsMediaDataInRealTime = true
-        vInput.transform = CGAffineTransform(rotationAngle: .pi / 2)
+        
+        switch baselineOrientation {
+        case .portrait:
+            vInput.transform = CGAffineTransform(rotationAngle: .pi / 2)
+        case .landscape:
+            vInput.transform = .identity
+        }
+        
+        print("[DEBUG] AssetWriter Input transform for \(baselineOrientation): \(vInput.transform)")
         
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(
             assetWriterInput: vInput,
@@ -285,6 +437,7 @@ class RecordingManager {
             AVNumberOfChannelsKey: 2,
             AVEncoderBitRateKey: 128000
         ]
+        
         let aInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
         aInput.expectsMediaDataInRealTime = true
         if writer.canAdd(aInput) {
@@ -352,6 +505,7 @@ class CameraViewController: UIViewController {
     private var recordingManager: RecordingManager?
     
     private var isRecording = false
+    private var recordingBaselineOrientation: RecordingBaselineOrientation = .portrait
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -387,7 +541,6 @@ class CameraViewController: UIViewController {
         cameraController.delegate = self
         cameraController.configureSession()
         
-        // Call startSession on a background queue
         DispatchQueue.global(qos: .userInitiated).async {
             self.cameraController.startSession()
             
@@ -396,20 +549,48 @@ class CameraViewController: UIViewController {
                 previewLayer.frame = self.view.bounds
                 self.view.layer.insertSublayer(previewLayer, at: 0)
                 
-                self.motionStabilizer.startUpdates(videoWidth: self.cameraController.videoWidth,
-                                                   videoHeight: self.cameraController.videoHeight)
+                self.motionStabilizer.startUpdates(
+                    videoWidth: self.cameraController.videoWidth,
+                    videoHeight: self.cameraController.videoHeight,
+                    baselineOrientation: self.recordingBaselineOrientation
+                )
                 
                 self.stopButton.isEnabled = false
+                
+                print("[DEBUG] Camera configured. Video dimensions: \(self.cameraController.videoWidth)x\(self.cameraController.videoHeight)")
             }
         }
     }
     
     @IBAction func recordButtonTapped(_ sender: UIButton) {
+        determineBaselineOrientation()
+        
+        // Quantize and set initial baseline angle before recording
+        motionStabilizer.setInitialBaselineAngle()
+        
         startRecording()
     }
     
     @IBAction func stopButtonTapped(_ sender: UIButton) {
         stopRecording()
+    }
+    
+    private func determineBaselineOrientation() {
+        let deviceOrientation = UIDevice.current.orientation
+        if deviceOrientation.isLandscape {
+            recordingBaselineOrientation = .landscape
+        } else {
+            recordingBaselineOrientation = .portrait
+        }
+        
+        // Restart motion updates with the new baseline orientation
+        motionStabilizer.startUpdates(
+            videoWidth: cameraController.videoWidth,
+            videoHeight: cameraController.videoHeight,
+            baselineOrientation: recordingBaselineOrientation
+        )
+        
+        print("[DEBUG] Recording started. Baseline orientation: \(recordingBaselineOrientation)")
     }
     
     private func startRecording() {
@@ -419,12 +600,17 @@ class CameraViewController: UIViewController {
         let height = cameraController.videoHeight
         
         let manager = RecordingManager(videoWidth: width, videoHeight: height)
+        manager.baselineOrientation = recordingBaselineOrientation
+        
         do {
             try manager.startRecording()
             recordingManager = manager
             isRecording = true
             recordButton.isEnabled = false
             stopButton.isEnabled = true
+            
+            print("[DEBUG] Started recording with baseline: \(recordingBaselineOrientation)")
+            print("[DEBUG] Video target dimensions: \(width)x\(height)")
         } catch {
             showAlert(title: "Recording Error", message: "Cannot start recording: \(error)")
         }
@@ -439,11 +625,14 @@ class CameraViewController: UIViewController {
         manager.stopRecording { url, error in
             if let url = url {
                 self.saveVideoToPhotoLibrary(url: url)
+                print("[DEBUG] Video saved at URL: \(url)")
             } else {
-                print("Error finishing writing: \(String(describing: error))")
+                print("[DEBUG] Error finishing writing: \(String(describing: error))")
             }
             self.recordingManager = nil
         }
+        
+        print("[DEBUG] Stopped recording.")
     }
     
     private func saveVideoToPhotoLibrary(url: URL) {
@@ -452,9 +641,9 @@ class CameraViewController: UIViewController {
         }) { saved, error in
             DispatchQueue.main.async {
                 if saved {
-                    print("Video saved successfully.")
+                    print("[DEBUG] Video saved successfully.")
                 } else if let error = error {
-                    print("Error saving video: \(error)")
+                    print("[DEBUG] Error saving video: \(error)")
                 }
             }
         }
@@ -484,6 +673,7 @@ extension CameraViewController: CameraControllerDelegate {
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         if manager.status == .unknown {
             manager.startSession(timestamp: timestamp)
+            print("[DEBUG] Started writer session at \(timestamp.value)/\(timestamp.timescale) seconds")
         }
         
         guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
@@ -493,12 +683,12 @@ extension CameraViewController: CameraControllerDelegate {
         let angle = motionStabilizer.currentRotationAngle
         let scale = motionStabilizer.currentScaleFactor
         
-        // Apply stabilization transformations, including dynamic scale
         if let stabilizedBuffer = videoProcessor.stabilizeFrame(ciImage: ciImage,
                                                                 width: controller.videoWidth,
                                                                 height: controller.videoHeight,
                                                                 rotationAngle: angle,
-                                                                scaleFactor: scale) {
+                                                                scaleFactor: scale,
+                                                                baselineOrientation: recordingBaselineOrientation) {
             manager.appendVideo(pixelBuffer: stabilizedBuffer, timestamp: timestamp)
         }
     }
@@ -506,5 +696,9 @@ extension CameraViewController: CameraControllerDelegate {
     func cameraController(_ controller: CameraController, didOutputAudioSampleBuffer sampleBuffer: CMSampleBuffer) {
         guard isRecording else { return }
         recordingManager?.appendAudio(sampleBuffer: sampleBuffer)
+    }
+    
+    private func radiansToDegrees(_ radians: Double) -> Double {
+        return radians * 180.0 / Double.pi
     }
 }
